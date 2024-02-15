@@ -22,7 +22,7 @@ def query_ai(client, thread_id, assistant_id, message_content):
         elif run_status.status == 'requires_action':
             terminal_tool_call = run_status.required_action.submit_tool_outputs.tool_calls[0]
             parsed_command = json.loads(terminal_tool_call.function.arguments)['command']
-            print(f'AI trying to execute: {parsed_command}')
+            print(f'AI> executing: {parsed_command}')
             try:
                 terminal_command_execution_output = subprocess.run([parsed_command], capture_output=True, text=True, shell=True)
                 output = terminal_command_execution_output.stdout if terminal_command_execution_output.returncode == 0 else terminal_command_execution_output.stderr
@@ -38,6 +38,11 @@ def query_ai(client, thread_id, assistant_id, message_content):
                     }
                 ]
             )
+        elif run_status.status == 'in_progress':
+            print('AI> Working...')
+            continue
+        else:
+            print(f"Unexpected run status: {run_status}")
     # Retrieve and return the last AI message in the thread, if available
     messages = client.beta.threads.messages.list(thread_id=thread_id)
     return messages.data[0].content[0].text.value if messages.data else "No response found."
@@ -47,7 +52,7 @@ def main():
 
     # Create an assistant with initial instructions and configuration
     assistant = client.beta.assistants.create(
-        instructions="Initial system instruction",
+        instructions="You are an AI code assistant, installed on the user's system. You can execute any command on their behalf using the 'executeTerminalCommand' action; you also have access to the contents of any files in the current directory.",
         model="gpt-4-turbo-preview",
         tools=[{
             "type": "function",
