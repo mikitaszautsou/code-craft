@@ -1,85 +1,88 @@
 import json
-from openai import OpenAI
+# from openai import OpenAI
 import time
+import anthropic
+import ast
 import subprocess
 
-def query_ai(client, thread_id, assistant_id, message_content):
-    """
-    Sends a message to the AI, initiates a run, and waits for a completed response or executes a required action.
-    """
-    # Create a message in the thread as the user
-    client.beta.threads.messages.create(thread_id=thread_id, role="user", content=message_content)
 
-    # Initiate a run with the assistant
-    run = client.beta.threads.runs.create(thread_id=thread_id, assistant_id=assistant_id, instructions="")
+def custom_decoder(string):
+    return string.replace('\\n', '\n')
 
-    poll_interval = 1  # Polling interval in seconds
-    while True:
-        run_status = client.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
-        time.sleep(poll_interval)  # Wait before polling again
-        if run_status.status == 'completed':
-            break
-        elif run_status.status == 'requires_action':
-            terminal_tool_call = run_status.required_action.submit_tool_outputs.tool_calls[0]
-            parsed_command = json.loads(terminal_tool_call.function.arguments)['command']
-            print(f'AI> executing: {parsed_command}')
-            try:
-                terminal_command_execution_output = subprocess.run([parsed_command], capture_output=True, text=True, shell=True)
-                output = terminal_command_execution_output.stdout if terminal_command_execution_output.returncode == 0 else terminal_command_execution_output.stderr
-            except Exception as e:
-                output = str(e)
-            run = client.beta.threads.runs.submit_tool_outputs(
-                thread_id=thread_id,
-                run_id=run.id,
-                tool_outputs=[
-                    {
-                        "tool_call_id": terminal_tool_call.id,
-                        "output": output,
-                    }
-                ]
-            )
-        elif run_status.status == 'in_progress':
-            print('AI> Working...')
-            continue
-        else:
-            print(f"Unexpected run status: {run_status}")
-    # Retrieve and return the last AI message in the thread, if available
-    messages = client.beta.threads.messages.list(thread_id=thread_id)
-    return messages.data[0].content[0].text.value if messages.data else "No response found."
+def parse_array(string):
+    # Find the positions of the first, second, third, and last occurrence of "'"
+    first_quote = string.find("'")
+    second_quote = string.find("'", first_quote + 1)
+    third_quote = string.find("'", second_quote + 1)
+    last_quote = string.rfind("'")
 
-def main():
-    client = OpenAI()
+    # Extract the substrings using string slicing
+    first_part = string[first_quote + 1: second_quote]
+    second_part = string[third_quote + 1: last_quote]
+    print('STRING', string)
+    print('FP', first_part)
+    print('SP', second_part)
+    # Create and return the parsed array
+    return [first_part, second_part]
 
-    # Create an assistant with initial instructions and configuration
-    assistant = client.beta.assistants.create(
-        instructions="You are an AI code assistant, installed on the user's system. You can execute any command on their behalf using the 'executeTerminalCommand' action; you also have access to the contents of any files in the current directory.",
-        model="gpt-4-turbo-preview",
-        tools=[{
-            "type": "function",
-            "function": {
-                "name": "executeTerminalCommand",
-                "description": "Executes a terminal command.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "The command to be executed in the terminal."
-                        },
-                    },
-                    "required": ["command"]
-                }
-            }
-        }]
+def query_ai(client, messages):
+    print('messages', messages)
+    message = client.messages.create(
+        model="claude-3-haiku-20240307",
+        max_tokens=1024,
+        system="you are code assistent, you should answer with JSON arrays which represents action, you have the following options\n['exec', 'command line to execute, for example -ls'] // execute some action on user's pc\n['say', 'to say something to user']\n\n    ",
+        messages=messages
     )
+    print(message)
+    messages.append({
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": message.content[0].text
+                }
+            ]
+    })
+    parsed_message = parse_array(message.content[0].text)
+    print('parsed message', parsed_message)
+    return parsed_message
+def main():
 
-    # Create a thread for interaction
-    thread = client.beta.threads.create()
-    
+    client = anthropic.Anthropic(
+        # defaults to os.environ.get("ANTHROPIC_API_KEY")
+        # api_key="my_api_key",
+    )
+    messages = []
     while True:
         userInput = input('USER> ')
-        ai_response = query_ai(client, thread.id, assistant.id, userInput)
-        print(f'AI> {ai_response}')
-
+        messages.append({
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"['user', '{userInput}']"
+                }
+            ]
+        })
+        ai_turn_ended = False
+        ai_message = query_ai(client, messages)
+        while not ai_turn_ended:
+            if ai_message[0] == 'say':
+                print(f'AI> {ai_message[1]}')
+                break
+            elif ai_message[0] == 'exec':
+                terminal_command_execution_output = subprocess.run([ai_message[1]], capture_output=True, text=True, shell=True)
+                output = terminal_command_execution_output.stdout if terminal_command_execution_output.returncode == 0 else terminal_command_execution_output.stderr
+                print(f'TERMINAL> {output}')
+                messages.append({
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"['system', '{output}']"
+                            }
+                        ]
+                })
+                ai_message = query_ai(client, messages)
 if __name__ == "__main__":
     main()
